@@ -1,6 +1,6 @@
-diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt
 --- orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt	2026-10-11 21:12:42.003722615 +0000
-+++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt	2026-10-11 21:12:42.140625340 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt	2026-10-11 21:36:55.441170258 +0000
 @@ -35,6 +35,7 @@
  import androidx.compose.material.icons.Icons
  import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -46,7 +46,7 @@ diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetai
 +                                song.artistId
 +                            )
 +                        }
-+                        com.codetrio.spatialflow.util.SongDownloader.downloadSongs(context, items)
++                        com.codetrio.spatialflow.util.PlaylistDownloader.downloadAll(context, items)
 +                    },
 +                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
 +                ) {
@@ -58,9 +58,9 @@ diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetai
          }
      ) {
          item {
-diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt
 --- orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt	2026-10-11 21:12:42.003933966 +0000
-+++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt	2026-10-11 21:12:42.139618484 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt	2026-10-11 21:36:55.438614736 +0000
 @@ -60,6 +60,7 @@
  import androidx.compose.material.icons.filled.Clear
  import androidx.compose.material.icons.filled.Close
@@ -84,7 +84,7 @@ diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScree
 +                Spacer(modifier = Modifier.height(8.dp))
 +
 +                OutlinedButton(
-+                    onClick = { com.codetrio.spatialflow.util.SongDownloader.downloadSongs(context, songs) },
++                    onClick = { com.codetrio.spatialflow.util.PlaylistDownloader.downloadAll(context, songs) },
 +                    modifier = Modifier.fillMaxWidth()
 +                ) {
 +                    Icon(Icons.Default.Download, null)
@@ -95,396 +95,76 @@ diff -ru orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScree
                  Spacer(modifier = Modifier.height(16.dp))
              }
  
-diff -ru orig/app/src/main/java/com/codetrio/spatialflow/util/SongDownloader.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/SongDownloader.kt
---- orig/app/src/main/java/com/codetrio/spatialflow/util/SongDownloader.kt	2026-10-11 21:12:42.005727139 +0000
-+++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/SongDownloader.kt	2026-10-11 21:12:51.472691288 +0000
-@@ -89,187 +89,229 @@
-             return
-         }
- 
-+        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Extracting and starting download: ${cleanTitle(song.title)}")
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt	1970-01-01 00:00:00.000000000 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt	2026-10-11 21:36:55.447326972 +0000
+@@ -0,0 +1,69 @@
++package com.codetrio.spatialflow.util
 +
-+        val appContext = context.applicationContext
-+        scope.launch { performDownload(appContext, song, videoId) }
-+    }
++import android.content.Context
++import com.codetrio.spatialflow.R
++import com.codetrio.spatialflow.model.SongItem
++import com.codetrio.spatialflow.ui.SnackbarController
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++import kotlinx.coroutines.withTimeoutOrNull
++import java.util.concurrent.atomic.AtomicBoolean
 +
-+    /**
-+     * Downloads every online song in [songs] one after another (sequential, so we don't
-+     * hammer the network or the FFmpeg packager). Local songs and songs that are already
-+     * downloaded or currently downloading are skipped.
-+     */
-+    fun downloadSongs(context: Context, songs: List<SongItem>) {
++/**
++ * Downloads a whole playlist by queueing its songs through the existing
++ * [SongDownloader], one at a time. Local songs and songs that are already
++ * downloaded are skipped.
++ */
++object PlaylistDownloader {
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++    private val running = AtomicBoolean(false)
++
++    fun downloadAll(context: Context, songs: List<SongItem>) {
++        if (!running.compareAndSet(false, true)) {
++            SnackbarController.showMessage("A playlist download is already running")
++            return
++        }
 +        val appContext = context.applicationContext
++
 +        scope.launch {
-+            val pending = songs
-+                .filter { !it.videoId.isNullOrEmpty() }
-+                .distinctBy { it.videoId }
-+                .filter { !_downloadProgress.value.containsKey(it.videoId) && !isSongDownloaded(appContext, it) }
++            try {
++                val pending = songs
++                    .filter { !it.videoId.isNullOrEmpty() }
++                    .distinctBy { it.videoId }
++                    .filter { !SongDownloader.isSongDownloaded(appContext, it) }
 +
-+            if (pending.isEmpty()) {
-+                withContext(Dispatchers.Main) {
-+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Everything in this playlist is already downloaded")
++                if (pending.isEmpty()) {
++                    withContext(Dispatchers.Main) {
++                        SnackbarController.showMessage("Everything in this playlist is already downloaded")
++                    }
++                    return@launch
 +                }
-+                return@launch
-+            }
 +
-+            withContext(Dispatchers.Main) {
-+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Downloading ${pending.size} songs...")
-+            }
++                withContext(Dispatchers.Main) {
++                    SnackbarController.showMessage("Downloading ${pending.size} songs...")
++                }
 +
-+            for (song in pending) {
-+                performDownload(appContext, song, song.videoId!!)
-+            }
++                for (song in pending) {
++                    val id = song.videoId ?: continue
++                    withContext(Dispatchers.Main) { SongDownloader.downloadSong(appContext, song) }
++                    // Wait for this song to start, then for it to finish, before the next one.
++                    withTimeoutOrNull(5_000L) { SongDownloader.downloadProgress.first { it.containsKey(id) } }
++                    withTimeoutOrNull(5 * 60_000L) { SongDownloader.downloadProgress.first { !it.containsKey(id) } }
++                }
 +
-+            withContext(Dispatchers.Main) {
-+                com.codetrio.spatialflow.ui.SnackbarController.showMessage(
-+                    "Playlist download finished",
-+                    iconResId = R.drawable.ic_downloaded
-+                )
++                withContext(Dispatchers.Main) {
++                    SnackbarController.showMessage(
++                        "Playlist download finished",
++                        iconResId = R.drawable.ic_downloaded
++                    )
++                }
++            } finally {
++                running.set(false)
 +            }
 +        }
 +    }
-+
-+    private suspend fun performDownload(context: Context, song: SongItem, videoId: String) {
-         val notificationId = song.id.toInt().coerceAtLeast(1)
-         val cleanTitleStr = cleanTitle(song.title)
-         val cleanArtistStr = cleanArtist(song.artist)
- 
--        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Extracting and starting download: $cleanTitleStr")
--
--        scope.launch {
--            _downloadProgress.value += (videoId to 0)
--            try {
--                // Initialize/Update download notification
--                updateNotification(context, cleanTitleStr, 0, notificationId)
--
--                val playerResult = NewPipeStreamExtractor.getPlayerResult(videoId)
--                val bestStream = playerResult?.streams?.firstOrNull()
--                val streamUrl = bestStream?.url ?: NewPipeStreamExtractor.getStreamUrl(videoId)
--                if (streamUrl == null) {
--                    cancelNotification(context, notificationId)
--                    withContext(Dispatchers.Main) {
--                        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to extract download URL for $cleanTitleStr")
--                    }
--                    return@launch
-+        _downloadProgress.value += (videoId to 0)
-+        try {
-+            // Initialize/Update download notification
-+            updateNotification(context, cleanTitleStr, 0, notificationId)
-+
-+            val playerResult = NewPipeStreamExtractor.getPlayerResult(videoId)
-+            val bestStream = playerResult?.streams?.firstOrNull()
-+            val streamUrl = bestStream?.url ?: NewPipeStreamExtractor.getStreamUrl(videoId)
-+            if (streamUrl == null) {
-+                _downloadProgress.value -= videoId
-+                cancelNotification(context, notificationId)
-+                withContext(Dispatchers.Main) {
-+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to extract download URL for $cleanTitleStr")
-                 }
-+                return
-+            }
- 
--                val mimeType = bestStream?.mimeType ?: ""
--                val isOpusSource = mimeType.contains("webm", ignoreCase = true) || 
--                                   mimeType.contains("opus", ignoreCase = true) ||
--                                   streamUrl.contains("mime=audio/webm") ||
--                                   streamUrl.contains("codecs=opus")
--
--                // Create temp download file
--                val tempDownloadFile = File(context.cacheDir, "temp_download_${videoId}.tmp")
--                val url = URL(streamUrl)
--                val connection = url.openConnection() as HttpURLConnection
--                connection.connect()
--
--                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
--                    cancelNotification(context, notificationId)
--                    withContext(Dispatchers.Main) {
--                        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Download server error: HTTP ${connection.responseCode}")
--                    }
--                    return@launch
-+            val mimeType = bestStream?.mimeType ?: ""
-+            val isOpusSource = mimeType.contains("webm", ignoreCase = true) || 
-+                               mimeType.contains("opus", ignoreCase = true) ||
-+                               streamUrl.contains("mime=audio/webm") ||
-+                               streamUrl.contains("codecs=opus")
-+
-+            // Create temp download file
-+            val tempDownloadFile = File(context.cacheDir, "temp_download_${videoId}.tmp")
-+            val url = URL(streamUrl)
-+            val connection = url.openConnection() as HttpURLConnection
-+            connection.connect()
-+
-+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-+                _downloadProgress.value -= videoId
-+                cancelNotification(context, notificationId)
-+                withContext(Dispatchers.Main) {
-+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Download server error: HTTP ${connection.responseCode}")
-                 }
-+                return
-+            }
- 
--                val totalBytes = connection.contentLength
--                connection.inputStream.use { input ->
--                    FileOutputStream(tempDownloadFile).use { output ->
--                        val buffer = ByteArray(8192)
--                        var bytesRead: Int
--                        var downloadedBytes = 0
--                        var lastProgressUpdate = 0L
--
--                        while (input.read(buffer).also { bytesRead = it } != -1) {
--                            output.write(buffer, 0, bytesRead)
--                            downloadedBytes += bytesRead
--
--                            if (totalBytes > 0) {
--                                val progress = ((downloadedBytes.toFloat() / totalBytes) * 100).toInt()
--                                if (_downloadProgress.value[videoId] != progress) {
--                                    _downloadProgress.value += (videoId to progress)
--                                }
--                                val now = System.currentTimeMillis()
--                                if (now - lastProgressUpdate > 400) { // Throttle updates to every 400ms for fluid CPU performance
--                                    lastProgressUpdate = now
--                                    updateNotification(context, cleanTitleStr, progress, notificationId)
--                                }
-+            val totalBytes = connection.contentLength
-+            connection.inputStream.use { input ->
-+                FileOutputStream(tempDownloadFile).use { output ->
-+                    val buffer = ByteArray(8192)
-+                    var bytesRead: Int
-+                    var downloadedBytes = 0
-+                    var lastProgressUpdate = 0L
-+
-+                    while (input.read(buffer).also { bytesRead = it } != -1) {
-+                        output.write(buffer, 0, bytesRead)
-+                        downloadedBytes += bytesRead
-+
-+                        if (totalBytes > 0) {
-+                            val progress = ((downloadedBytes.toFloat() / totalBytes) * 100).toInt()
-+                            if (_downloadProgress.value[videoId] != progress) {
-+                                _downloadProgress.value += (videoId to progress)
-+                            }
-+                            val now = System.currentTimeMillis()
-+                            if (now - lastProgressUpdate > 400) { // Throttle updates to every 400ms for fluid CPU performance
-+                                lastProgressUpdate = now
-+                                updateNotification(context, cleanTitleStr, progress, notificationId)
-                             }
-                         }
-                     }
-                 }
-+            }
- 
--                // Load, auto-crop 1:1, and compress thumbnail to a temp file
--                var artworkFile: File? = null
--                val thumbnailUrl = song.thumbnailUrl
--                if (!thumbnailUrl.isNullOrEmpty()) {
--                    try {
--                        val future = Glide.with(context)
--                            .asBitmap()
--                            .load(thumbnailUrl)
--                            .submit()
--                        val originalBitmap = future.get()
--                        if (originalBitmap != null) {
--                            val size = originalBitmap.width.coerceAtMost(originalBitmap.height)
--                            val x = (originalBitmap.width - size) / 2
--                            val y = (originalBitmap.height - size) / 2
--                            val croppedBitmap = Bitmap.createBitmap(originalBitmap, x, y, size, size)
--                            
--                            val artFile = File(context.cacheDir, "temp_art_${videoId}.jpg")
--                            FileOutputStream(artFile).use { fos ->
--                                croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, fos)
--                            }
--                            artworkFile = artFile
-+            // Load, auto-crop 1:1, and compress thumbnail to a temp file
-+            var artworkFile: File? = null
-+            val thumbnailUrl = song.thumbnailUrl
-+            if (!thumbnailUrl.isNullOrEmpty()) {
-+                try {
-+                    val future = Glide.with(context)
-+                        .asBitmap()
-+                        .load(thumbnailUrl)
-+                        .submit()
-+                    val originalBitmap = future.get()
-+                    if (originalBitmap != null) {
-+                        val size = originalBitmap.width.coerceAtMost(originalBitmap.height)
-+                        val x = (originalBitmap.width - size) / 2
-+                        val y = (originalBitmap.height - size) / 2
-+                        val croppedBitmap = Bitmap.createBitmap(originalBitmap, x, y, size, size)
-+                        
-+                        val artFile = File(context.cacheDir, "temp_art_${videoId}.jpg")
-+                        FileOutputStream(artFile).use { fos ->
-+                            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, fos)
-                         }
--                    } catch (e: Exception) {
--                        Log.e(TAG, "Failed to fetch and crop thumbnail", e)
-+                        artworkFile = artFile
-                     }
-+                } catch (e: Exception) {
-+                    Log.e(TAG, "Failed to fetch and crop thumbnail", e)
-                 }
-+            }
- 
--                // Prepare output file (Ogg Opus format)
--                val fileName = "$cleanTitleStr - $cleanArtistStr.opus"
--                val outputFile = AudioFileManager.createOutputFile(context, fileName)
--                val cleanAlbumStr = cleanAlbum(song.title)
--
--                // Encode cover art as METADATA_BLOCK_PICTURE (Opus/FLAC Vorbis Comment standard)
--                // Must be done BEFORE artworkFile is deleted.
--                val pictureBase64: String = artworkFile?.let { art ->
--                    try {
--                        val jpegBytes = art.readBytes()
--                        val mime = "image/jpeg"
--                        val mimeBytes = mime.toByteArray(Charsets.US_ASCII)
--                        val buf = java.nio.ByteBuffer.allocate(
--                            4 +                // picture type
--                            4 + mimeBytes.size + // MIME type length + MIME type string
--                            4 +                // description length (empty, 0 bytes follow)
--                            4 +                // width
--                            4 +                // height
--                            4 +                // color depth
--                            4 +                // indexed-color count
--                            4 + jpegBytes.size // data length + raw JPEG bytes
--                        ).order(java.nio.ByteOrder.BIG_ENDIAN)
--                        buf.putInt(3)             // picture type: front cover
--                        buf.putInt(mimeBytes.size)
--                        buf.put(mimeBytes)
--                        buf.putInt(0)             // description length (empty)
--                        buf.putInt(0)             // width
--                        buf.putInt(0)             // height
--                        buf.putInt(0)             // color depth
--                        buf.putInt(0)             // indexed-color count
--                        buf.putInt(jpegBytes.size)
--                        buf.put(jpegBytes)
--                        android.util.Base64.encodeToString(buf.array(), android.util.Base64.NO_WRAP)
--                    } catch (e: Exception) {
--                        Log.e(TAG, "METADATA_BLOCK_PICTURE encoding failed", e)
--                        ""
--                    }
--                } ?: ""
--
--                // Package using FFmpeg — metadata + cover art embedded as Vorbis Comments natively
--                val ffmpegArgs = FFmpegCommandBuilder.buildOpusPackageArgs(
--                    inputPath = tempDownloadFile.absolutePath,
--                    outputPath = outputFile.absolutePath,
--                    isOpusSource = isOpusSource,
--                    title = cleanTitleStr,
--                    artist = cleanArtistStr,
--                    album = cleanAlbumStr,
--                    pictureBase64 = pictureBase64
--                ).toTypedArray()
--
--                Log.d(TAG, "Executing FFmpeg packaging (${ffmpegArgs.size} args)")
--                val session = com.arthenica.ffmpegkit.FFmpegKit.executeWithArguments(ffmpegArgs)
--                val success = ReturnCode.isSuccess(session.returnCode)
--
--                // Clean up temp files
--                try { tempDownloadFile.delete() } catch (_: Exception) {}
--                try { artworkFile?.delete() } catch (_: Exception) {}
--
--                if (!success) {
--                    Log.e(TAG, "FFmpeg packaging failed with code ${session.returnCode}\n${session.allLogsAsString}")
--                    throw Exception("FFmpeg failed to remux audio stream to Opus container")
--                }
-+            // Prepare output file (Ogg Opus format)
-+            val fileName = "$cleanTitleStr - $cleanArtistStr.opus"
-+            val outputFile = AudioFileManager.createOutputFile(context, fileName)
-+            val cleanAlbumStr = cleanAlbum(song.title)
-+
-+            // Encode cover art as METADATA_BLOCK_PICTURE (Opus/FLAC Vorbis Comment standard)
-+            // Must be done BEFORE artworkFile is deleted.
-+            val pictureBase64: String = artworkFile?.let { art ->
-+                try {
-+                    val jpegBytes = art.readBytes()
-+                    val mime = "image/jpeg"
-+                    val mimeBytes = mime.toByteArray(Charsets.US_ASCII)
-+                    val buf = java.nio.ByteBuffer.allocate(
-+                        4 +                // picture type
-+                        4 + mimeBytes.size + // MIME type length + MIME type string
-+                        4 +                // description length (empty, 0 bytes follow)
-+                        4 +                // width
-+                        4 +                // height
-+                        4 +                // color depth
-+                        4 +                // indexed-color count
-+                        4 + jpegBytes.size // data length + raw JPEG bytes
-+                    ).order(java.nio.ByteOrder.BIG_ENDIAN)
-+                    buf.putInt(3)             // picture type: front cover
-+                    buf.putInt(mimeBytes.size)
-+                    buf.put(mimeBytes)
-+                    buf.putInt(0)             // description length (empty)
-+                    buf.putInt(0)             // width
-+                    buf.putInt(0)             // height
-+                    buf.putInt(0)             // color depth
-+                    buf.putInt(0)             // indexed-color count
-+                    buf.putInt(jpegBytes.size)
-+                    buf.put(jpegBytes)
-+                    android.util.Base64.encodeToString(buf.array(), android.util.Base64.NO_WRAP)
-+                } catch (e: Exception) {
-+                    Log.e(TAG, "METADATA_BLOCK_PICTURE encoding failed", e)
-+                    ""
-+                }
-+            } ?: ""
-+
-+            // Package using FFmpeg — metadata + cover art embedded as Vorbis Comments natively
-+            val ffmpegArgs = FFmpegCommandBuilder.buildOpusPackageArgs(
-+                inputPath = tempDownloadFile.absolutePath,
-+                outputPath = outputFile.absolutePath,
-+                isOpusSource = isOpusSource,
-+                title = cleanTitleStr,
-+                artist = cleanArtistStr,
-+                album = cleanAlbumStr,
-+                pictureBase64 = pictureBase64
-+            ).toTypedArray()
-+
-+            Log.d(TAG, "Executing FFmpeg packaging (${ffmpegArgs.size} args)")
-+            val session = com.arthenica.ffmpegkit.FFmpegKit.executeWithArguments(ffmpegArgs)
-+            val success = ReturnCode.isSuccess(session.returnCode)
-+
-+            // Clean up temp files
-+            try { tempDownloadFile.delete() } catch (_: Exception) {}
-+            try { artworkFile?.delete() } catch (_: Exception) {}
-+
-+            if (!success) {
-+                Log.e(TAG, "FFmpeg packaging failed with code ${session.returnCode}\n${session.allLogsAsString}")
-+                throw Exception("FFmpeg failed to remux audio stream to Opus container")
-+            }
- 
--                // Copy file to MediaStore and request a media scan
--                AudioFileManager.scanFile(context, outputFile)
-+            // Copy file to MediaStore and request a media scan
-+            AudioFileManager.scanFile(context, outputFile)
- 
--                // Show completion status
--                showFinishedNotification(context, cleanTitleStr, cleanArtistStr, notificationId)
-+            // Show completion status
-+            showFinishedNotification(context, cleanTitleStr, cleanArtistStr, notificationId)
- 
--                _downloadProgress.value -= videoId
--                withContext(Dispatchers.Main) {
--                    com.codetrio.spatialflow.ui.SnackbarController.showMessage(
--                        "Downloaded: $cleanTitleStr",
--                        iconResId = R.drawable.ic_downloaded
--                    )
--                }
-+            _downloadProgress.value -= videoId
-+            withContext(Dispatchers.Main) {
-+                com.codetrio.spatialflow.ui.SnackbarController.showMessage(
-+                    "Downloaded: $cleanTitleStr",
-+                    iconResId = R.drawable.ic_downloaded
-+                )
-+            }
- 
--            } catch (e: Exception) {
--                _downloadProgress.value -= videoId
--                Log.e(TAG, "Download failed for ${song.title}", e)
--                cancelNotification(context, notificationId)
--                withContext(Dispatchers.Main) {
--                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Download failed: ${e.message}")
--                }
-+        } catch (e: Exception) {
-+            _downloadProgress.value -= videoId
-+            Log.e(TAG, "Download failed for ${song.title}", e)
-+            cancelNotification(context, notificationId)
-+            withContext(Dispatchers.Main) {
-+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Download failed: ${e.message}")
-             }
-         }
-     }
++}
