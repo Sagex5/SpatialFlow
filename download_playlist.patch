@@ -1,0 +1,416 @@
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/player/queue/Queue.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/player/queue/Queue.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/player/queue/Queue.kt	2026-10-11 21:12:42.000923656 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/player/queue/Queue.kt	2026-10-11 22:28:47.085776424 +0000
+@@ -38,6 +38,7 @@
+ import androidx.compose.foundation.shape.CircleShape
+ import androidx.compose.material3.OutlinedTextFieldDefaults
+ import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+ import androidx.compose.material.icons.rounded.Clear
+ import androidx.compose.material.icons.rounded.Menu
+ import androidx.compose.material.icons.rounded.Search
+@@ -356,6 +357,7 @@
+     isDark: Boolean,
+     isAutoplayEnabled: Boolean,
+     onAutoplayToggle: (Boolean) -> Unit,
++    onSaveQueueClick: (() -> Unit)? = null,
+     modifier: Modifier = Modifier
+ ) {
+     val configuration = LocalConfiguration.current
+@@ -596,6 +598,21 @@
+                             )
+                         }
+ 
++                        // Save the whole queue as a playlist
++                        if (onSaveQueueClick != null && songList.isNotEmpty()) {
++                            IconButton(
++                                onClick = onSaveQueueClick,
++                                modifier = Modifier.size(36.dp)
++                            ) {
++                                Icon(
++                                    imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
++                                    contentDescription = "Save queue as playlist",
++                                    tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.7f),
++                                    modifier = Modifier.size(22.dp)
++                                )
++                            }
++                        }
++
+                         // Search Toggle Button
+                         IconButton(
+                             onClick = {
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/SaveQueueDialog.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/SaveQueueDialog.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/ui/SaveQueueDialog.kt	1970-01-01 00:00:00.000000000 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/SaveQueueDialog.kt	2026-10-11 22:28:47.043350929 +0000
+@@ -0,0 +1,153 @@
++package com.codetrio.spatialflow.ui
++
++import android.content.Context
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.width
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.Button
++import androidx.compose.material3.Checkbox
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.unit.dp
++import com.codetrio.spatialflow.data.db.MusicDatabase
++import com.codetrio.spatialflow.data.db.PlaylistEntity
++import com.codetrio.spatialflow.data.innertube.AccountManager
++import com.codetrio.spatialflow.data.innertube.YouTubeMusic
++import com.codetrio.spatialflow.model.SongItem
++import com.codetrio.spatialflow.model.toPlaylistSongEntity
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++
++/**
++ * Saves the current play queue as a named playlist in the app's library and,
++ * if you are signed in, optionally as a private playlist in your YouTube Music library.
++ */
++object QueuePlaylistSaver {
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++
++    fun save(context: Context, title: String, songs: List<SongItem>, syncToAccount: Boolean) {
++        val appContext = context.applicationContext
++        val queue = songs.toList()
++        scope.launch {
++            try {
++                // 1) Local playlist (shows up in Library > Playlists)
++                val dao = MusicDatabase.getDatabase(appContext).playlistDao()
++                val playlistId = dao.insertPlaylist(PlaylistEntity(title = title))
++                queue.forEachIndexed { index, song ->
++                    dao.insertPlaylistSong(song.toPlaylistSongEntity(playlistId, index))
++                }
++                var message = "Saved \"$title\" (${queue.size} songs)"
++
++                // 2) YouTube Music library (syncs with your signed-in Google account)
++                if (syncToAccount && AccountManager.isLoggedIn(appContext)) {
++                    val videoIds = queue.mapNotNull { it.videoId }.filter { it.isNotEmpty() }.distinct()
++                    if (videoIds.isEmpty()) {
++                        message += ". No online songs to sync to YouTube Music"
++                    } else {
++                        val created = YouTubeMusic.createPlaylist(
++                            title = title,
++                            description = "Saved from SpatialFlow",
++                            privacyStatus = "PRIVATE",
++                            videoIds = videoIds.take(50)
++                        )
++                        val ytId = created.getOrNull()
++                        if (ytId == null) {
++                            message += ". Couldn't save to YouTube Music: ${created.exceptionOrNull()?.message ?: "unknown error"}"
++                        } else {
++                            videoIds.drop(50).chunked(50).forEach { chunk ->
++                                YouTubeMusic.addToPlaylist(ytId, chunk)
++                            }
++                            message += " and added to your YouTube Music library"
++                        }
++                    }
++                }
++
++                withContext(Dispatchers.Main) { SnackbarController.showMessage(message) }
++            } catch (e: Exception) {
++                withContext(Dispatchers.Main) {
++                    SnackbarController.showMessage("Couldn't save playlist: ${e.message}")
++                }
++            }
++        }
++    }
++}
++
++@Composable
++fun SaveQueueAsPlaylistDialog(
++    songs: List<SongItem>,
++    onDismiss: () -> Unit
++) {
++    val context = LocalContext.current
++    val loggedIn = remember { AccountManager.isLoggedIn(context) }
++    var name by remember { mutableStateOf("") }
++    var syncToAccount by remember { mutableStateOf(loggedIn) }
++
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text("Save queue as playlist") },
++        text = {
++            Column {
++                OutlinedTextField(
++                    value = name,
++                    onValueChange = { name = it },
++                    label = { Text("Playlist name") },
++                    singleLine = true,
++                    modifier = Modifier.fillMaxWidth()
++                )
++                Spacer(modifier = Modifier.height(8.dp))
++                Text(
++                    "${songs.size} songs",
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++                Spacer(modifier = Modifier.height(8.dp))
++                if (loggedIn) {
++                    Row(
++                        modifier = Modifier
++                            .fillMaxWidth()
++                            .clickable { syncToAccount = !syncToAccount },
++                        verticalAlignment = Alignment.CenterVertically
++                    ) {
++                        Checkbox(checked = syncToAccount, onCheckedChange = { syncToAccount = it })
++                        Spacer(modifier = Modifier.width(4.dp))
++                        Text("Also save to my YouTube Music library", style = MaterialTheme.typography.bodyMedium)
++                    }
++                } else {
++                    Text(
++                        "Sign in with your Google account to also save playlists to your YouTube Music library.",
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant
++                    )
++                }
++            }
++        },
++        confirmButton = {
++            Button(
++                enabled = name.isNotBlank() && songs.isNotEmpty(),
++                onClick = {
++                    QueuePlaylistSaver.save(context, name.trim(), songs, syncToAccount && loggedIn)
++                    onDismiss()
++                }
++            ) { Text("Save") }
++        },
++        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
++    )
++}
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt	2026-10-11 21:12:42.003722615 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/explore/ExploreDetails.kt	2026-10-11 22:20:50.675276848 +0000
+@@ -35,6 +35,7 @@
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.automirrored.filled.ArrowBack
+ import androidx.compose.material.icons.filled.ChevronRight
++import androidx.compose.material.icons.filled.Download
+ import androidx.compose.material.icons.filled.MoreVert
+ import androidx.compose.material.icons.filled.Radio
+ import androidx.compose.material.icons.filled.Shuffle
+@@ -149,6 +150,21 @@
+ ) {
+     val configuration = LocalConfiguration.current
+     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
++    val context = LocalContext.current
++    val downloadItems = remember(playlistPage) {
++        playlistPage.songs.map { song ->
++            com.codetrio.spatialflow.model.SongItem.createOnlineSong(
++                song.videoId,
++                song.title,
++                song.artist,
++                "https://music.youtube.com/watch?v=${song.videoId}",
++                song.durationMs,
++                song.thumbnailUrl,
++                song.artistId
++            )
++        }
++    }
++    val allDownloaded = com.codetrio.spatialflow.util.rememberAllDownloaded(downloadItems)
+ 
+     AdaptiveDetailContainer(
+         isLandscape = isLandscape,
+@@ -161,8 +177,17 @@
+             ExpressiveConnectedButtonGroup(
+                 onShuffleClick = { if (playlistPage.songs.isNotEmpty()) onSongClick(playlistPage.songs.first(), playlistPage.songs.shuffled(), 0) },
+                 onRadioClick = { if (playlistPage.songs.isNotEmpty()) onStartRadioClick(playlistPage.songs.first().videoId) },
+-                modifier = Modifier.fillMaxWidth()
++                modifier = Modifier.weight(1f)
+             )
++            // Simple download icon: only shown while some songs are not downloaded yet
++            if (downloadItems.isNotEmpty() && !allDownloaded) {
++                androidx.compose.material3.FilledTonalIconButton(
++                    onClick = { com.codetrio.spatialflow.util.PlaylistDownloader.downloadAll(context, downloadItems) },
++                    modifier = Modifier.padding(end = 16.dp).size(52.dp)
++                ) {
++                    Icon(Icons.Default.Download, contentDescription = "Download playlist")
++                }
++            }
+         }
+     ) {
+         item {
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt	2026-10-11 21:12:42.003933966 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/library/LibraryScreen.kt	2026-10-11 22:20:50.674635439 +0000
+@@ -60,6 +60,7 @@
+ import androidx.compose.material.icons.filled.Clear
+ import androidx.compose.material.icons.filled.Close
+ import androidx.compose.material.icons.filled.Delete
++import androidx.compose.material.icons.filled.Download
+ import androidx.compose.material.icons.filled.Favorite
+ import androidx.compose.material.icons.filled.Headset
+ import androidx.compose.material.icons.filled.MusicNote
+@@ -1448,6 +1449,8 @@
+ ) {
+     val songsEntity by viewModel.getSongsForLocalPlaylist(playlist.id).collectAsStateWithLifecycle(emptyList())
+     val songs = remember(songsEntity) { songsEntity.map { it.toSongItem() } }
++    val context = LocalContext.current
++    val allDownloaded = com.codetrio.spatialflow.util.rememberAllDownloaded(songs)
+ 
+     ModalBottomSheet(
+         onDismissRequest = onDismiss,
+@@ -1536,6 +1539,15 @@
+                         Spacer(Modifier.width(8.dp))
+                         Text("Shuffle")
+                     }
++
++                    // Simple download icon: only shown while some songs are not downloaded yet
++                    if (!allDownloaded) {
++                        androidx.compose.material3.FilledTonalIconButton(
++                            onClick = { com.codetrio.spatialflow.util.PlaylistDownloader.downloadAll(context, songs) }
++                        ) {
++                            Icon(Icons.Default.Download, contentDescription = "Download playlist")
++                        }
++                    }
+                 }
+ 
+                 Spacer(modifier = Modifier.height(16.dp))
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/ui/player/FullPlayer.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/player/FullPlayer.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/ui/player/FullPlayer.kt	2026-10-11 21:12:42.004214947 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/ui/player/FullPlayer.kt	2026-10-11 22:28:47.086638331 +0000
+@@ -350,6 +350,7 @@
+ 
+     // Sleep Timer State & Controller Dialog state
+     var showSleepTimerDialog by remember { mutableStateOf(false) }
++    var showSaveQueueDialog by remember { mutableStateOf(false) }
+     val sleepTimerMode by viewModel.sleepTimerMode.collectAsStateWithLifecycle()
+     val sleepTimerEndTime by viewModel.sleepTimerEndTime.collectAsStateWithLifecycle()
+ 
+@@ -919,9 +920,17 @@
+             dynamicAccentColor = dynamicAccentColor,
+             isDark = isDark,
+             isAutoplayEnabled = isAutoplayEnabled,
+-            onAutoplayToggle = onAutoplayToggle
++            onAutoplayToggle = onAutoplayToggle,
++            onSaveQueueClick = { showSaveQueueDialog = true }
+         )
+ 
++        if (showSaveQueueDialog) {
++            com.codetrio.spatialflow.ui.SaveQueueAsPlaylistDialog(
++                songs = songList,
++                onDismiss = { showSaveQueueDialog = false }
++            )
++        }
++
+         // --- Standalone Sleep Timer Bottom Sheet ---
+         if (showSleepTimerDialog) {
+             SleepTimerBottomSheet(
+diff -ruN orig/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt
+--- orig/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt	1970-01-01 00:00:00.000000000 +0000
++++ SpatialFlow-1.8.1/app/src/main/java/com/codetrio/spatialflow/util/PlaylistDownloader.kt	2026-10-11 22:20:50.673501855 +0000
+@@ -0,0 +1,96 @@
++package com.codetrio.spatialflow.util
++
++import android.content.Context
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.platform.LocalContext
++import com.codetrio.spatialflow.R
++import com.codetrio.spatialflow.model.SongItem
++import com.codetrio.spatialflow.ui.SnackbarController
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++import kotlinx.coroutines.withTimeoutOrNull
++import java.util.concurrent.atomic.AtomicBoolean
++
++/**
++ * Downloads a whole playlist by queueing its songs through the existing
++ * [SongDownloader], one at a time. Local songs and songs that are already
++ * downloaded are skipped.
++ */
++object PlaylistDownloader {
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++    private val running = AtomicBoolean(false)
++
++    fun downloadAll(context: Context, songs: List<SongItem>) {
++        if (!running.compareAndSet(false, true)) {
++            SnackbarController.showMessage("A playlist download is already running")
++            return
++        }
++        val appContext = context.applicationContext
++
++        scope.launch {
++            try {
++                val pending = songs
++                    .filter { !it.videoId.isNullOrEmpty() }
++                    .distinctBy { it.videoId }
++                    .filter { !SongDownloader.isSongDownloaded(appContext, it) }
++
++                if (pending.isEmpty()) {
++                    withContext(Dispatchers.Main) {
++                        SnackbarController.showMessage("Everything in this playlist is already downloaded")
++                    }
++                    return@launch
++                }
++
++                withContext(Dispatchers.Main) {
++                    SnackbarController.showMessage("Downloading ${pending.size} songs...")
++                }
++
++                for (song in pending) {
++                    val id = song.videoId ?: continue
++                    withContext(Dispatchers.Main) { SongDownloader.downloadSong(appContext, song) }
++                    // Wait for this song to start, then for it to finish, before the next one.
++                    withTimeoutOrNull(5_000L) { SongDownloader.downloadProgress.first { it.containsKey(id) } }
++                    withTimeoutOrNull(5 * 60_000L) { SongDownloader.downloadProgress.first { !it.containsKey(id) } }
++                }
++
++                withContext(Dispatchers.Main) {
++                    SnackbarController.showMessage(
++                        "Playlist download finished",
++                        iconResId = R.drawable.ic_downloaded
++                    )
++                }
++            } finally {
++                running.set(false)
++            }
++        }
++    }
++
++    /** True when every online song in [songs] is already downloaded (local songs count as done). */
++    fun allDownloaded(context: Context, songs: List<SongItem>): Boolean =
++        songs.all { it.videoId.isNullOrEmpty() || SongDownloader.isSongDownloaded(context, it) }
++}
++
++/**
++ * Compose helper: true when every song in [songs] is downloaded (also true until the first check finishes).
++ * Re-checks whenever a download starts or finishes, so the Download button can hide itself.
++ */
++@Composable
++fun rememberAllDownloaded(songs: List<SongItem>): Boolean {
++    val appContext = LocalContext.current.applicationContext
++    var all by remember(songs) { mutableStateOf(true) }
++    LaunchedEffect(songs) {
++        SongDownloader.downloadProgress.collect {
++            all = withContext(Dispatchers.IO) { PlaylistDownloader.allDownloaded(appContext, songs) }
++        }
++    }
++    return all
++}
